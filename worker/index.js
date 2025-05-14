@@ -1205,8 +1205,17 @@ export default {
       }
       
       try {
+        // Initialize response data with performance tracking
+        const responseData = {
+          performance: {}
+        };
+        
+        // Measure R2 metadata retrieval performance
+        const r2StartTime = Date.now();
         const r2Key = `r2-${fileName}`;
         const r2Metadata = await env.R2_BUCKET.head(r2Key);
+        const r2EndTime = Date.now();
+        const r2ReadTime = r2EndTime - r2StartTime;
         
         if (!r2Metadata) {
           return Response.json({ 
@@ -1214,27 +1223,43 @@ export default {
           }, { status: 404 });
         }
         
-        // Initialize response data with R2 metadata
-        const responseData = {
-          r2: {
-            key: r2Key,
-            size: r2Metadata.size,
-            metadata: {
-              contentType: r2Metadata.httpMetadata.contentType,
-              etag: r2Metadata.etag,
-              uploaded: r2Metadata.uploaded.toISOString(),
-              version: r2Metadata.version || "Not available",
-              customMetadata: r2Metadata.customMetadata || {}
-            }
+        // Add R2 metadata to response
+        responseData.r2 = {
+          key: r2Key,
+          size: r2Metadata.size,
+          metadata: {
+            contentType: r2Metadata.httpMetadata.contentType,
+            etag: r2Metadata.etag,
+            uploaded: r2Metadata.uploaded.toISOString(),
+            version: r2Metadata.version || "Not available",
+            customMetadata: r2Metadata.customMetadata || {}
           }
+        };
+        
+        // Add R2 performance data
+        responseData.performance.r2 = {
+          readTimeMs: r2ReadTime,
+          provider: "Cloudflare R2"
         };
         
         // Try to get GCS metadata if credentials are available
         if (env.GCP_PROJECT_ID && env.GCP_CLIENT_EMAIL && env.GCP_PRIVATE_KEY && env.GCP_BUCKET_NAME) {
           try {
+            // Measure GCS metadata retrieval performance
+            const gcsStartTime = Date.now();
             const gcsMetadata = await getGCSMetadata(env, fileName);
+            const gcsEndTime = Date.now();
+            const gcsReadTime = gcsEndTime - gcsStartTime;
+            
             if (gcsMetadata) {
+              // Add GCS metadata to response
               responseData.gcs = gcsMetadata;
+              
+              // Add GCS performance data
+              responseData.performance.gcs = {
+                readTimeMs: gcsReadTime,
+                provider: "Google Cloud Storage"
+              };
             }
           } catch (gcsError) {
             console.error("GCS metadata error:", gcsError);
