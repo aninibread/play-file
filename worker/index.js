@@ -649,6 +649,40 @@ function capitalizeHeader(header) {
     .join("-");
 }
 
+// Helper function to create canonical headers with proper newline handling
+function createCanonicalHeaders(headers) {
+  return Object.entries(headers)
+    .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase()))
+    .map(([key, value]) => {
+      const headerName = key.toLowerCase();
+      const headerValue = value.trim().replace(/\s+/g, " ");
+      return `${headerName}:${headerValue}\n`;
+    })
+    .join("");
+}
+
+// Helper function to create a canonical request properly
+function createCanonicalRequest(method, path, queryString, headers, signedHeaders, contentHash) {
+  return [
+    method,
+    path,
+    queryString,
+    createCanonicalHeaders(headers),
+    signedHeaders,
+    contentHash
+  ].join("\n");
+}
+
+// Helper function to create string to sign
+async function createStringToSign(algorithm, amzDate, scope, canonicalRequest) {
+  return [
+    algorithm,
+    amzDate,
+    scope,
+    await sha256Hex(canonicalRequest)
+  ].join("\n");
+}
+
 
 // S3 metadata function using direct API calls
 async function getS3Metadata(env, fileName) {
@@ -656,46 +690,99 @@ async function getS3Metadata(env, fileName) {
     console.log("Fetching S3 metadata for:", fileName);
     const bucketName = env.S3_BUCKET_NAME;
     const region = env.AWS_REGION;
-    const objectName = `s3-${fileName}`;
+    
+    // Use the exact same format as in the upload function for consistency
+    const s3FileName = `s3-${fileName}`;
     
     // Create the HTTP path component with correct encoding
-    const encodedObjectName = encodeURIComponent(objectName).replace(/%2F/g, '/');
-    const path = `/${encodedObjectName}`;
+    const objectKey = encodeURIComponent(s3FileName).replace(/%2F/g, '/');
+    const path = `/${objectKey}`;
     
     const host = `${bucketName}.s3.${region}.amazonaws.com`;
+    const url = `https://${host}${path}`;
     
     // Set up headers for HEAD request - use lowercase for signature calculation
     const headers = {
       "host": host,
+      "x-amz-date": getAmzDate(),
       "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // Empty body hash
     };
     
-    const authHeader = await getS3Signature(env, "HEAD", path, host, "", headers);
-    headers["authorization"] = authHeader;
+    // Get the date components for the authorization header
+    const amzDate = headers["x-amz-date"];
+    const dateStamp = amzDate.slice(0, 8);
     
-    // Convert to properly capitalized headers for the HTTP request
-    const requestHeaders = {};
-    for (const [key, value] of Object.entries(headers)) {
-      if (key === "host") {
-        requestHeaders["Host"] = value;
-      } else {
-        requestHeaders[key] = value;
-      }
-    }
+    // Generate the signing key
+    const signingKey = await getSigningKey(
+      env.AWS_SECRET_ACCESS_KEY, 
+      dateStamp, 
+      region, 
+      "s3"
+    );
+    
+    // Create canonical request using our helper function
+    const signedHeaders = Object.keys(headers).sort().join(";");
+    
+    // Use the helper function to create the canonical request properly
+    const canonicalRequest = createCanonicalRequest(
+      "HEAD",
+      path,
+      "",  // No query parameters
+      headers,
+      signedHeaders,
+      headers["x-amz-content-sha256"]
+    );
+    
+    console.log("S3 Metadata canonical request:", canonicalRequest);
+    
+    // Create the string to sign using our helper function
+    const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+    const stringToSign = await createStringToSign(
+      "AWS4-HMAC-SHA256",
+      amzDate,
+      credentialScope,
+      canonicalRequest
+    );
+    
+    console.log("S3 Metadata string to sign:\\n", stringToSign);
+    
+    // Calculate the signature
+    const signature = await hmacHex(signingKey, stringToSign);
+    
+    // Create the authorization header
+    const authorizationHeader =
+      `AWS4-HMAC-SHA256 Credential=${env.AWS_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    
+    // Prepare headers for the request - keep original case for required headers
+    const requestHeaders = {
+      "Host": host,
+      "X-Amz-Date": amzDate,
+      "X-Amz-Content-Sha256": headers["x-amz-content-sha256"],
+      "Authorization": authorizationHeader
+    };
     
     // Log for diagnostic purposes
-    console.log("S3 Metadata URL:", `https://${host}${path}`);
+    console.log("S3 Metadata URL:", url);
     console.log("S3 Metadata Headers:", JSON.stringify(requestHeaders));
     
     // Make HEAD request to get object metadata
-    const response = await fetch(`https://${host}${path}`, {
+    const response = await fetch(url, {
       method: "HEAD",
       headers: requestHeaders
     });
     
+    // If we get a 403, try a different approach - use a GET request with the ?versioning param
+    // This might work even when HEAD doesn't, depending on the bucket policy
+    if (response.status === 403) {
+      console.log("S3 HEAD request failed with 403. Trying alternate approach...");
+      
+      // Try to get object metadata via a GET request instead
+      return await getS3MetadataAlternative(env, fileName);
+    }
+    
     if (!response.ok) {
       if (response.status === 404) {
-        console.log(`S3 object not found: ${objectName}`);
+        console.log(`S3 object not found: ${s3FileName}`);
         return null;
       }
       const errorText = await response.text();
@@ -730,6 +817,211 @@ async function getS3Metadata(env, fileName) {
     };
   } catch (error) {
     console.error("S3 metadata error:", error);
+    throw error;
+  }
+}
+
+// Alternative S3 metadata function that uses GET ?locations instead of HEAD 
+// Some S3 bucket policies only allow GET but not HEAD
+async function getS3MetadataAlternative(env, fileName) {
+  try {
+    console.log("Trying alternative S3 metadata approach for:", fileName);
+    const bucketName = env.S3_BUCKET_NAME;
+    const region = env.AWS_REGION;
+    const s3FileName = `s3-${fileName}`;
+    
+    // This time we'll make a GET request to the bucket itself with the ?location query param
+    const host = `${bucketName}.s3.${region}.amazonaws.com`;
+    const path = "/";
+    const queryParams = "location=";
+    const url = `https://${host}${path}?${queryParams}`;
+    
+    // Set up headers for GET request
+    const headers = {
+      "host": host,
+      "x-amz-date": getAmzDate(),
+      "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    };
+    
+    // Get the date components for the authorization header
+    const amzDate = headers["x-amz-date"];
+    const dateStamp = amzDate.slice(0, 8);
+    
+    // Generate the signing key
+    const signingKey = await getSigningKey(
+      env.AWS_SECRET_ACCESS_KEY, 
+      dateStamp, 
+      region, 
+      "s3"
+    );
+    
+    // Create canonical request using helper functions
+    const signedHeaders = Object.keys(headers).sort().join(";");
+    
+    const canonicalRequest = createCanonicalRequest(
+      "GET",
+      path,
+      queryParams,
+      headers,
+      signedHeaders,
+      headers["x-amz-content-sha256"]
+    );
+    
+    console.log("S3 Alternative canonical request:\\n", canonicalRequest);
+    
+    // Create the string to sign using helper function
+    const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+    const stringToSign = await createStringToSign(
+      "AWS4-HMAC-SHA256",
+      amzDate,
+      credentialScope,
+      canonicalRequest
+    );
+    
+    console.log("S3 Alternative string to sign:\\n", stringToSign);
+    
+    // Calculate the signature
+    const signature = await hmacHex(signingKey, stringToSign);
+    
+    // Create the authorization header
+    const authorizationHeader =
+      `AWS4-HMAC-SHA256 Credential=${env.AWS_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+    
+    // Prepare headers for the request
+    const requestHeaders = {
+      "Host": host,
+      "X-Amz-Date": amzDate,
+      "X-Amz-Content-Sha256": headers["x-amz-content-sha256"],
+      "Authorization": authorizationHeader
+    };
+    
+    console.log("S3 Alternative URL:", url);
+    console.log("S3 Alternative Headers:", JSON.stringify(requestHeaders));
+    
+    // Make GET request to get bucket location
+    const response = await fetch(url, {
+      method: "GET",
+      headers: requestHeaders
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`S3 alternative GET request failed: ${response.status}`, errorText);
+      throw new Error(`S3 metadata retrieval failed with both methods. GET error: ${response.status} - ${errorText}`);
+    }
+    
+    // Since we can communicate with the bucket, we can try a direct GET request to find the size 
+    // by using range headers (asking for 0 bytes)
+    const objectKey = encodeURIComponent(s3FileName).replace(/%2F/g, '/');
+    const objectUrl = `https://${host}/${objectKey}`;
+    
+    // Create new headers for the object GET request with Range
+    const objectHeaders = {
+      "host": host,
+      "x-amz-date": getAmzDate(),
+      "range": "bytes=0-0",
+      "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    };
+    
+    // Get date components
+    const objAmzDate = objectHeaders["x-amz-date"];
+    const objDateStamp = objAmzDate.slice(0, 8);
+    
+    // Sign the new request using helper functions
+    const objSignedHeaders = Object.keys(objectHeaders).sort().join(";");
+    
+    const objCanonicalRequest = createCanonicalRequest(
+      "GET",
+      `/${objectKey}`,
+      "",
+      objectHeaders,
+      objSignedHeaders,
+      objectHeaders["x-amz-content-sha256"]
+    );
+    
+    const objCredentialScope = `${objDateStamp}/${region}/s3/aws4_request`;
+    const objStringToSign = await createStringToSign(
+      "AWS4-HMAC-SHA256",
+      objAmzDate,
+      objCredentialScope,
+      objCanonicalRequest
+    );
+    
+    // Generate new signing key based on updated date
+    const objSigningKey = await getSigningKey(
+      env.AWS_SECRET_ACCESS_KEY, 
+      objDateStamp, 
+      region, 
+      "s3"
+    );
+    
+    const objSignature = await hmacHex(objSigningKey, objStringToSign);
+    const objAuthHeader = `AWS4-HMAC-SHA256 Credential=${env.AWS_ACCESS_KEY_ID}/${objCredentialScope}, SignedHeaders=${objSignedHeaders}, Signature=${objSignature}`;
+    
+    // Prepare object request headers
+    const objRequestHeaders = {
+      "Host": host,
+      "X-Amz-Date": objAmzDate,
+      "Range": "bytes=0-0",
+      "X-Amz-Content-Sha256": objectHeaders["x-amz-content-sha256"],
+      "Authorization": objAuthHeader
+    };
+    
+    console.log("S3 Object URL:", objectUrl);
+    console.log("S3 Object Headers:", JSON.stringify(objRequestHeaders));
+    
+    // Make the GET request for the object with Range header
+    const objResponse = await fetch(objectUrl, {
+      method: "GET",
+      headers: objRequestHeaders
+    });
+    
+    if (!objResponse.ok) {
+      console.error(`S3 object GET request failed: ${objResponse.status}`);
+      // We'll still return some metadata, even if we can't get the size
+      return {
+        key: s3FileName,
+        size: 0, // Unknown size
+        metadata: {
+          contentType: "application/octet-stream", // Default content type
+          lastModified: new Date().toISOString(),
+          etag: "Unknown",
+          versionId: "Not available",
+          note: "Limited metadata available due to bucket permissions"
+        }
+      };
+    }
+    
+    // Get size from content-range header (format: "bytes 0-0/TOTAL_SIZE")
+    const contentRange = objResponse.headers.get("Content-Range");
+    let size = 0;
+    
+    if (contentRange) {
+      const match = contentRange.match(/bytes 0-0\/(\d+)/);
+      if (match && match[1]) {
+        size = parseInt(match[1], 10);
+      }
+    }
+    
+    const contentTypeHeader = objResponse.headers.get("Content-Type");
+    const lastModified = objResponse.headers.get("Last-Modified");
+    const etag = objResponse.headers.get("ETag")?.replace(/"/g, "");
+    
+    console.log("S3 metadata retrieved via alternative method");
+    
+    return {
+      key: s3FileName,
+      size: size,
+      metadata: {
+        contentType: contentTypeHeader || "application/octet-stream",
+        lastModified: lastModified ? new Date(lastModified).toISOString() : new Date().toISOString(),
+        etag: etag || "Unknown",
+        versionId: "Not available",
+        note: "Retrieved via GET request (limited metadata available)"
+      }
+    };
+  } catch (error) {
+    console.error("S3 alternative metadata error:", error);
     throw error;
   }
 }
