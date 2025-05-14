@@ -107,7 +107,18 @@ h1 {
 	font-weight: 500;
 }
 
-.error-message .suggestion {
+.warning-message {
+	background-color: #fff8e6;
+	color: #856404;
+	padding: 1em;
+	border-radius: 4px;
+	margin-bottom: 1.5em;
+	border-left: 4px solid #ff9900;
+	font-weight: 500;
+}
+
+.error-message .suggestion,
+.warning-message .suggestion {
 	font-size: 0.9em;
 	margin-top: 0.5em;
 	color: #666;
@@ -333,4 +344,176 @@ details[open] summary {
 
 .performance-view .metadata-table td {
 	vertical-align: middle;
+}
+
+/* Available Files Section */
+.available-files-header {
+  display: flex;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e1e1e1;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.available-files-header h3 {
+  font-size: 1.2rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.available-files-header .clickable:hover {
+  color: #646cff;
+}
+
+.available-files-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+.available-files-count {
+  font-size: 0.9rem;
+  color: #666;
+  font-style: italic;
+}
+
+.s3-check-indicator {
+  font-size: 0.8rem;
+  color: #ff9900;
+  font-weight: 500;
+  background-color: #fff8e6;
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid #ffecb3;
+  display: flex;
+  align-items: center;
+  cursor: help;
+}
+
+.s3-fallback-notice {
+  background-color: #fff8e6;
+  border: 1px solid #ffecb3;
+  border-radius: 4px;
+  padding: 0.7rem;
+  margin: 0.8rem 0;
+  color: #744700;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.s3-tip {
+  font-style: italic;
+  font-size: 0.8rem;
+  color: #856404;
+}
+
+.s3-note {
+  color: #ff9900;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.available-files-section {
+  margin-top: 0.5rem;
+  padding-top: 0;
+}
+
+.loading-message {
+  font-style: italic;
+  color: #666;
+}
+
+.files-container {
+  margin-top: 0.5rem;
+}
+
+.files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.file-item {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background-color: #f9f9f9;
+}
+
+.file-item:hover {
+  border-color: #6492e7;
+  background-color: #f0f5ff;
+}
+
+.file-item.selected {
+  border-color: #316dca;
+  background-color: #e6f0ff;
+  box-shadow: 0 0 0 1px #316dca;
+}
+
+.file-name {
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  word-break: break-word;
+}
+
+.provider-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.badge.r2 {
+  background-color: #f38020;
+  color: white;
+}
+
+.badge.gcs {
+  background-color: #4285f4;
+  color: white;
+}
+
+.badge.s3 {
+  background-color: #ff9900;
+  color: white;
+}
+
+.provider-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  padding: 0.8rem;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+  justify-content: center;
+  font-size: 0.8rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.button.refresh {
+  font-size: 1rem;
+  padding: 0 0.8rem;
 }

@@ -10,6 +10,9 @@ function App() {
   const [metadata, setMetadata] = useState(null)
   const [resultTab, setResultTab] = useState('summary')
   const [metadataTab, setMetadataTab] = useState('r2')
+  const [availableFiles, setAvailableFiles] = useState([])
+  const [availableFilesLoading, setAvailableFilesLoading] = useState(false)
+  const [showAvailableFiles, setShowAvailableFiles] = useState(true)
   const fileInputRef = useRef(null)
   
   // Initialize tabs when data changes
@@ -32,6 +35,36 @@ function App() {
       }
     }
   }, [uploadResult, metadata])
+  
+  // Fetch available files when component mounts
+  useEffect(() => {
+    fetchAvailableFiles()
+  }, [])
+  
+  // Fetch list of available files from the API
+  const fetchAvailableFiles = async () => {
+    setAvailableFilesLoading(true)
+    
+    try {
+      const response = await fetch('/api/list-objects')
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch available files: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      setAvailableFiles(data.files || [])
+      
+      // If we got results, show the available files panel
+      if (data.files && data.files.length > 0) {
+        setShowAvailableFiles(true)
+      }
+    } catch (err) {
+      console.error('Error fetching available files:', err)
+    } finally {
+      setAvailableFilesLoading(false)
+    }
+  }
 
   const handleFileChange = (e) => {
     if (e.target.files.length > 0) {
@@ -39,6 +72,10 @@ function App() {
       setFile(selectedFile)
       setFileName(selectedFile.name)
     }
+  }
+  
+  const selectExistingFile = (fileName) => {
+    setFileName(fileName)
   }
 
   const handleUpload = async () => {
@@ -49,6 +86,9 @@ function App() {
 
     // Hide metadata results when showing upload results to avoid UI clutter
     setMetadata(null)
+    
+    // Hide available files panel
+    setShowAvailableFiles(false)
     
     setLoading(true)
     setError(null)
@@ -70,6 +110,9 @@ function App() {
 
       const result = await response.json()
       setUploadResult(result)
+      
+      // Refresh available files list after successful upload
+      fetchAvailableFiles()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -85,6 +128,9 @@ function App() {
 
     // Hide upload results when showing metadata to avoid UI clutter
     setUploadResult(null)
+    
+    // Hide available files panel
+    setShowAvailableFiles(false)
     
     setLoading(true)
     setError(null)
@@ -113,9 +159,14 @@ function App() {
     setUploadResult(null)
     setMetadata(null)
     setError(null)
+    setShowAvailableFiles(true) // Show the available files again on reset
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
+  }
+  
+  const toggleAvailableFiles = () => {
+    setShowAvailableFiles(prev => !prev)
   }
 
   return (
@@ -164,6 +215,64 @@ function App() {
             Reset
           </button>
         </div>
+        
+        {/* Available Files Section with Toggle */}
+        <div className="available-files-header">
+          <h3 
+            className="clickable" 
+            onClick={toggleAvailableFiles}
+          >
+            Available Files {showAvailableFiles ? '▼' : '▶'}
+          </h3>
+          <div className="available-files-info">
+            <span className="available-files-count">
+              {availableFiles.length} {availableFiles.length === 1 ? 'file' : 'files'} available
+            </span>
+          </div>
+        </div>
+        
+        {showAvailableFiles && (
+          <div className="available-files-section">
+            {availableFilesLoading ? (
+              <p className="loading-message">Loading available files...</p>
+            ) : availableFiles.length === 0 ? (
+              <p className="info-note">No files available. Upload a file first.</p>
+            ) : (
+              <div className="files-container">
+                <p className="info-note">Click on a file to select it for metadata retrieval:</p>
+                
+                
+                <div className="files-grid">
+                  {availableFiles.map(file => (
+                    <div
+                      key={file.fileName}
+                      className={`file-item ${fileName === file.fileName ? 'selected' : ''}`}
+                      onClick={() => selectExistingFile(file.fileName)}
+                    >
+                      <div className="file-name">{file.fileName}</div>
+                      <div className="provider-badges">
+                        {file.providers.includes('r2') && <span className="badge r2" title="Available in Cloudflare R2">R2</span>}
+                        {file.providers.includes('gcs') && <span className="badge gcs" title="Available in Google Cloud Storage">GCS</span>}
+                        {file.providers.includes('s3') && <span className="badge s3" title="Available in Amazon S3">S3</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="provider-legend">
+                  <div className="legend-item">
+                    <span className="badge r2">R2</span> Cloudflare R2
+                  </div>
+                  <div className="legend-item">
+                    <span className="badge gcs">GCS</span> Google Cloud Storage
+                  </div>
+                  <div className="legend-item">
+                    <span className="badge s3">S3</span> Amazon S3
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         
         {error && (
           <div className="error-message">
@@ -444,9 +553,12 @@ function App() {
                   <div className="s3-result">
                     <h4>S3 Upload Details</h4>
                     {uploadResult.s3Error ? (
-                      <p className="error-message">Error: {uploadResult.s3Error}</p>
+                      <div className="error-message">
+                        <p>Error: {uploadResult.s3Error}</p>
+                        <p className="suggestion">S3 upload failed. This may be due to permissions or authentication issues.</p>
+                      </div>
                     ) : !uploadResult.s3 ? (
-                      <p className="info-note">No S3 data available.</p>
+                      <p className="info-note">No S3 data available. Check your AWS configuration.</p>
                     ) : (
                     <table className="metadata-table">
                       <tbody>
@@ -716,9 +828,12 @@ function App() {
                   <div className="s3-metadata">
                     <h4>S3 Metadata</h4>
                     {metadata.s3Error ? (
-                      <p className="error-message">Error: {metadata.s3Error}</p>
+                      <div className="error-message">
+                        <p>Error: {metadata.s3Error}</p>
+                        <p className="suggestion">S3 metadata could not be retrieved. This may be due to permissions or authentication issues.</p>
+                      </div>
                     ) : !metadata.s3 ? (
-                      <p className="info-note">No S3 metadata available.</p>
+                      <p className="info-note">No S3 metadata available. The file may not exist in S3 or may have a different name.</p>
                     ) : (
                     <table className="metadata-table">
                       <tbody>

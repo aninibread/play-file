@@ -510,7 +510,8 @@ async function uploadToS3(env, file, fileName, contentType) {
 
 function getAmzDate() {
   const now = new Date();
-  return now.toISOString().replace(/[:-]|\.\d{3}/g, "") + "Z";
+  // Ensure correct format: YYYYMMDDTHHMMSSZ (no double Z)
+  return now.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 
 async function sha256Hex(data) {
@@ -803,7 +804,7 @@ async function getS3Metadata(env, fileName) {
     console.log("S3 metadata retrieved successfully");
     
     return {
-      key: objectName,
+      key: s3FileName,
       size: parseInt(contentLength, 10),
       metadata: {
         contentType: contentTypeHeader,
@@ -1029,6 +1030,24 @@ async function getS3MetadataAlternative(env, fileName) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    
+    // Log environment check on startup (only keys presence, not the actual values)
+    if (url.pathname === "/api/status") {
+      console.log("Environment check:");
+      console.log("- R2 Bucket: ", env.R2_BUCKET ? "Available" : "Missing");
+      console.log("- AWS Environment:");
+      console.log("  - S3_BUCKET_NAME: ", env.S3_BUCKET_NAME ? "Set" : "Missing");
+      console.log("  - AWS_REGION: ", env.AWS_REGION ? "Set" : "Missing");
+      console.log("  - AWS_ACCESS_KEY_ID: ", env.AWS_ACCESS_KEY_ID ? "Set" : "Missing");
+      console.log("  - AWS_SECRET_ACCESS_KEY: ", env.AWS_SECRET_ACCESS_KEY ? 
+        `Set (length: ${env.AWS_SECRET_ACCESS_KEY.length} chars)` : "Missing");
+      console.log("- GCS Environment:");
+      console.log("  - GCP_BUCKET_NAME: ", env.GCP_BUCKET_NAME ? "Set" : "Missing");
+      console.log("  - GCP_PROJECT_ID: ", env.GCP_PROJECT_ID ? "Set" : "Missing");
+      console.log("  - GCP_CLIENT_EMAIL: ", env.GCP_CLIENT_EMAIL ? "Set" : "Missing");
+      console.log("  - GCP_PRIVATE_KEY: ", env.GCP_PRIVATE_KEY ? 
+        `Set (length: ${env.GCP_PRIVATE_KEY.length} chars)` : "Missing");
+    }
 
     if (url.pathname === "/api/upload") {
       if (request.method !== "POST") {
@@ -1340,6 +1359,324 @@ export default {
         }
         
         return Response.json(responseData);
+      } catch (error) {
+        return Response.json({ error: error.message }, { status: 500 });
+      }
+    } else if (url.pathname === "/api/list-objects") {
+      // Endpoint to list available objects across all storage providers
+      try {
+        // Initialize result object
+        const result = {
+          r2: [],
+          gcs: [],
+          s3: []
+        };
+        
+        // Get R2 objects (always available since it's required)
+        try {
+          const r2Objects = await env.R2_BUCKET.list({
+            prefix: "r2-",
+            limit: 50
+          });
+          
+          // Format R2 objects
+          result.r2 = r2Objects.objects.map(obj => ({
+            key: obj.key,
+            fileName: obj.key.replace('r2-', ''),
+            size: obj.size,
+            uploaded: obj.uploaded.toISOString(),
+            etag: obj.etag
+          }));
+        } catch (r2Error) {
+          console.error("Error listing R2 objects:", r2Error);
+          result.r2Error = r2Error.message;
+        }
+        
+        // Get GCS objects if credentials are available
+        if (env.GCP_PROJECT_ID && env.GCP_CLIENT_EMAIL && env.GCP_PRIVATE_KEY && env.GCP_BUCKET_NAME) {
+          try {
+            // Get an access token for GCS
+            const accessToken = await getGCSAccessToken(env);
+            
+            // List objects in the GCS bucket
+            const response = await fetch(
+              `https://storage.googleapis.com/storage/v1/b/${env.GCP_BUCKET_NAME}/o?prefix=gcs-`,
+              {
+                headers: {
+                  "Authorization": `Bearer ${accessToken}`
+                }
+              }
+            );
+            
+            if (!response.ok) {
+              throw new Error(`GCS list operation failed: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            // Format GCS objects
+            if (data.items && Array.isArray(data.items)) {
+              result.gcs = data.items.map(item => ({
+                key: item.name,
+                fileName: item.name.replace('gcs-', ''),
+                size: parseInt(item.size, 10),
+                uploaded: item.timeCreated,
+                generation: item.generation
+              }));
+            }
+          } catch (gcsError) {
+            console.error("Error listing GCS objects:", gcsError);
+            result.gcsError = gcsError.message;
+          }
+        }
+        
+        // Get S3 objects if credentials are available
+        if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY && env.AWS_REGION && env.S3_BUCKET_NAME) {
+          try {
+            // Use our S3 signing process to list objects
+            const bucketName = env.S3_BUCKET_NAME;
+            const region = env.AWS_REGION;
+            
+            // Fixing URL format - using the virtual-hosted-style which is preferred
+            const host = `${bucketName}.s3.${region}.amazonaws.com`;
+            const path = `/`;
+            
+            // Using proper query parameter format for S3
+            // The order of query parameters is important for the signature calculation
+            const queryParams = "list-type=2&max-keys=100&prefix=s3-";
+            
+            console.log("S3 listing URL:", `https://${host}${path}?${queryParams}`);
+            
+            // Generate precise timestamp
+            const amzDate = getAmzDate();
+            const dateStamp = amzDate.slice(0, 8);
+            
+            // Set up authentication headers (explicit lowercase for canonical form)
+            const headers = {
+              "host": host,
+              "x-amz-date": amzDate,
+              "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            };
+            
+            // Sort and join header keys for signing
+            const signedHeaders = Object.keys(headers).sort().join(";");
+            
+            // Construct canonical headers with precise format
+            const canonicalHeaders = Object.keys(headers)
+              .sort()
+              .map(key => `${key.toLowerCase()}:${headers[key].trim()}`)
+              .join('\n') + '\n';
+            
+            // Create canonical request with precise spacing and newlines
+            const canonicalRequest = [
+              "GET",
+              path,
+              queryParams,
+              canonicalHeaders,
+              signedHeaders,
+              headers["x-amz-content-sha256"]
+            ].join("\n");
+            
+            console.log("Canonical Request:", canonicalRequest);
+            
+            // Generate signing key
+            const signingKey = await getSigningKey(
+              env.AWS_SECRET_ACCESS_KEY,
+              dateStamp,
+              region,
+              "s3"
+            );
+            
+            // Hash the canonical request with sha256
+            const requestHash = await sha256Hex(canonicalRequest);
+            
+            // Create string to sign with correct format
+            const algorithm = "AWS4-HMAC-SHA256";
+            const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+            
+            const stringToSign = [
+              algorithm,
+              amzDate,
+              credentialScope,
+              requestHash
+            ].join("\n");
+            
+            console.log("String to Sign:", stringToSign);
+            
+            // Calculate signature
+            const signature = await hmacHex(signingKey, stringToSign);
+            
+            // Create authorization header
+            const authorizationHeader = `${algorithm} Credential=${env.AWS_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+            
+            // Prepare headers for the request (uppercase for standard HTTP)
+            const requestHeaders = {
+              "Host": host,
+              "X-Amz-Date": amzDate,
+              "X-Amz-Content-Sha256": headers["x-amz-content-sha256"],
+              "Authorization": authorizationHeader
+            };
+            
+            console.log("Request Headers:", JSON.stringify(requestHeaders));
+            
+            // Make the request
+            const response = await fetch(`https://${host}${path}?${queryParams}`, {
+              method: "GET",
+              headers: requestHeaders
+            });
+            
+            console.log("S3 List Response Status:", response.status);
+            
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error(`S3 list operation failed: ${response.status}`, errorText);
+              throw new Error(`S3 list operation failed: ${response.status} - ${errorText}`);
+            }
+            
+            // Parse XML response
+            const xml = await response.text();
+            console.log("S3 list response XML:", xml.substring(0, 500) + "..."); // Log a preview of the XML
+            
+            // Initialize arrays
+            const keys = [];
+            const sizes = [];
+            const dates = [];
+            
+            try {
+              // Check for common error messages in the XML response
+              if (xml.includes("<Error>")) {
+                const errorCodeMatch = xml.match(/<Code>(.*?)<\/Code>/);
+                const errorMessageMatch = xml.match(/<Message>(.*?)<\/Message>/);
+                const errorCode = errorCodeMatch ? errorCodeMatch[1] : "Unknown error code";
+                const errorMessage = errorMessageMatch ? errorMessageMatch[1] : "Unknown error message";
+                
+                console.error(`S3 returned XML error: ${errorCode} - ${errorMessage}`);
+                throw new Error(`S3 API error: ${errorCode} - ${errorMessage}`);
+              }
+              
+              // Try different XML patterns - S3 can return XML in slightly different formats
+              let contentMatches = xml.match(/<Contents>[\s\S]*?<\/Contents>/g) || [];
+              
+              // If no Contents found, try alternative format
+              if (contentMatches.length === 0) {
+                // Try alternative XML format without the Contents tags
+                const keyMatches = xml.match(/<Key>(.*?)<\/Key>/g) || [];
+                console.log(`Found ${keyMatches.length} direct key matches in S3 response`);
+                
+                keyMatches.forEach(match => {
+                  const key = match.replace('<Key>', '').replace('</Key>', '');
+                  if (key.startsWith('s3-')) {
+                    keys.push(key);
+                    sizes.push(0); // Default size
+                    dates.push(null); // Default date
+                  }
+                });
+              } else {
+                // Process structured Content elements
+                console.log(`Found ${contentMatches.length} S3 objects in response`);
+                
+                // Process each Content element
+                contentMatches.forEach(content => {
+                  // Extract key
+                  const keyMatch = content.match(/<Key>(.*?)<\/Key>/);
+                  if (keyMatch && keyMatch[1]) {
+                    const key = keyMatch[1];
+                    console.log("Found S3 key:", key);
+                    
+                    // Only include keys with our prefix
+                    if (key.startsWith('s3-')) {
+                      keys.push(key);
+                      
+                      // Extract size from this content block
+                      const sizeMatch = content.match(/<Size>(.*?)<\/Size>/);
+                      if (sizeMatch && sizeMatch[1]) {
+                        sizes.push(parseInt(sizeMatch[1], 10));
+                      } else {
+                        sizes.push(0);
+                      }
+                      
+                      // Extract last modified date from this content block
+                      const dateMatch = content.match(/<LastModified>(.*?)<\/LastModified>/);
+                      if (dateMatch && dateMatch[1]) {
+                        dates.push(dateMatch[1]);
+                      } else {
+                        dates.push(null);
+                      }
+                    }
+                  }
+                });
+              }
+            } catch (parseError) {
+              console.error("Error parsing S3 XML response:", parseError);
+              console.log("Raw XML response:", xml);
+            }
+            
+            console.log(`Extracted ${keys.length} S3 objects with 's3-' prefix`);
+            
+            // Create S3 objects array
+            for (let i = 0; i < keys.length; i++) {
+              result.s3.push({
+                key: keys[i],
+                fileName: keys[i].replace('s3-', ''),
+                size: i < sizes.length ? sizes[i] : 0,
+                lastModified: i < dates.length ? dates[i] : null
+              });
+            }
+            
+            console.log("Final S3 objects list:", JSON.stringify(result.s3));
+          } catch (s3Error) {
+            console.error("Error listing S3 objects:", s3Error);
+            result.s3Error = s3Error.message;
+          }
+        }
+        
+        // Create aggregated view for convenience
+        const allFiles = new Map();
+        
+        // Add R2 files to the map
+        result.r2.forEach(obj => {
+          if (!allFiles.has(obj.fileName)) {
+            allFiles.set(obj.fileName, { fileName: obj.fileName, providers: [] });
+          }
+          allFiles.get(obj.fileName).providers.push('r2');
+        });
+        
+        // Add GCS files
+        result.gcs.forEach(obj => {
+          if (!allFiles.has(obj.fileName)) {
+            allFiles.set(obj.fileName, { fileName: obj.fileName, providers: [] });
+          }
+          allFiles.get(obj.fileName).providers.push('gcs');
+        });
+        
+        // Add S3 files
+        result.s3.forEach(obj => {
+          if (!allFiles.has(obj.fileName)) {
+            allFiles.set(obj.fileName, { fileName: obj.fileName, providers: [] });
+          }
+          allFiles.get(obj.fileName).providers.push('s3');
+        });
+        
+        // Log info if S3 listing operation fails
+        if (result.s3.length === 0 && result.s3Error && env.AWS_ACCESS_KEY_ID) {
+          console.log("S3 list operation failed:", result.s3Error);
+          console.log("Please check S3 bucket permissions and ensure LIST operations are allowed");
+        }
+        
+        // Convert the map to an array and add to the result
+        result.files = Array.from(allFiles.values());
+        
+        // Include helpful metadata about the file verification process
+        result.stats = {
+          totalFiles: result.files.length,
+          providerCounts: {
+            r2: result.r2.length,
+            gcs: result.gcs.length,
+            s3: result.s3.length
+          }
+        };
+        
+        return Response.json(result);
       } catch (error) {
         return Response.json({ error: error.message }, { status: 500 });
       }
