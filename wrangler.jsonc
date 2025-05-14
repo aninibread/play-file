@@ -7,12 +7,25 @@
 	"name": "play-file",
 	"main": "worker/index.js",
 	"compatibility_date": "2025-05-13",
+	"compatibility_flags": ["nodejs_compat"],
+	"account_id": "323f42859527b406beadd91bff779583",
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
 	"observability": {
+
 		"enabled": true
-	}
+	},
+	"r2_buckets": [
+		{
+			"binding": "R2_BUCKET",
+			"bucket_name": "storage-comparison"
+		}
+	],
+	"vars": {
+		"AWS_REGION": "us-east-1",
+		"S3_BUCKET_NAME": "myrandombucket-for-anni"
+	},
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
