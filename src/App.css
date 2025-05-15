@@ -200,6 +200,22 @@ h1 {
 	background-color: #646cff;
 }
 
+.tab-button.missing-data {
+	background-color: #fff8e6;
+	border-color: #ffb74d;
+	color: #e65100;
+}
+
+.tab-button.missing-data.active {
+	background-color: #ffb74d;
+	border-color: #e65100;
+	color: white;
+}
+
+.tab-button.missing-data.active::after {
+	background-color: #e65100;
+}
+
 /* Metadata Tables */
 .metadata-table {
 	width: 100%;
@@ -271,6 +287,13 @@ details[open] summary {
 	margin-bottom: 1em;
 	font-size: 0.9em;
 	color: #1a73e8;
+}
+
+.info-note .suggestion {
+	font-size: 0.9em;
+	margin-top: 0.5em;
+	color: #666;
+	font-weight: normal;
 }
 
 /* Performance View Styles */

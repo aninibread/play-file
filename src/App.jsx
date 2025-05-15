@@ -42,7 +42,7 @@ function App() {
   }, [])
   
   // Fetch list of available files from the API
-  const fetchAvailableFiles = async () => {
+  const fetchAvailableFiles = async (keepCollapsed = false) => {
     setAvailableFilesLoading(true)
     
     try {
@@ -55,8 +55,9 @@ function App() {
       const data = await response.json()
       setAvailableFiles(data.files || [])
       
-      // If we got results, show the available files panel
-      if (data.files && data.files.length > 0) {
+      // Only show the available files panel if not explicitly keeping it collapsed
+      // and we actually have files to show
+      if (!keepCollapsed && data.files && data.files.length > 0) {
         setShowAvailableFiles(true)
       }
     } catch (err) {
@@ -111,8 +112,8 @@ function App() {
       const result = await response.json()
       setUploadResult(result)
       
-      // Refresh available files list after successful upload
-      fetchAvailableFiles()
+      // Refresh available files list after successful upload but keep it collapsed
+      fetchAvailableFiles(true)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -631,30 +632,24 @@ function App() {
                     Performance
                   </button>
                 )}
-                {metadata.r2 && (
-                  <button 
-                    className={`tab-button ${metadataTab === 'r2' ? 'active' : ''}`}
-                    onClick={() => setMetadataTab('r2')}
-                  >
-                    R2
-                  </button>
-                )}
-                {(metadata.gcs || metadata.gcsError) && (
-                  <button 
-                    className={`tab-button ${metadataTab === 'gcs' ? 'active' : ''}`}
-                    onClick={() => setMetadataTab('gcs')}
-                  >
-                    GCS
-                  </button>
-                )}
-                {(metadata.s3 || metadata.s3Error) && (
-                  <button 
-                    className={`tab-button ${metadataTab === 's3' ? 'active' : ''}`}
-                    onClick={() => setMetadataTab('s3')}
-                  >
-                    S3
-                  </button>
-                )}
+                <button 
+                  className={`tab-button ${metadataTab === 'r2' ? 'active' : ''} ${!metadata.r2 && !metadata.r2Error ? 'missing-data' : ''}`}
+                  onClick={() => setMetadataTab('r2')}
+                >
+                  R2 {!metadata.r2 && !metadata.r2Error ? '⚠️' : ''}
+                </button>
+                <button 
+                  className={`tab-button ${metadataTab === 'gcs' ? 'active' : ''} ${!metadata.gcs && !metadata.gcsError ? 'missing-data' : ''}`}
+                  onClick={() => setMetadataTab('gcs')}
+                >
+                  GCS {!metadata.gcs && !metadata.gcsError ? '⚠️' : ''}
+                </button>
+                <button 
+                  className={`tab-button ${metadataTab === 's3' ? 'active' : ''} ${!metadata.s3 && !metadata.s3Error ? 'missing-data' : ''}`}
+                  onClick={() => setMetadataTab('s3')}
+                >
+                  S3 {!metadata.s3 && !metadata.s3Error ? '⚠️' : ''}
+                </button>
               </div>
               
               <div className="tab-content">
@@ -736,39 +731,51 @@ function App() {
                   </div>
                 )}
                 
-                {metadataTab === 'r2' && metadata.r2 && (
+                {metadataTab === 'r2' && (
                   <div className="r2-metadata">
                     <h4>R2 Metadata</h4>
-                    <table className="metadata-table">
-                      <tbody>
-                        <tr>
-                          <td>Key</td>
-                          <td>{metadata.r2.key}</td>
-                        </tr>
-                        <tr>
-                          <td>Size</td>
-                          <td>{metadata.r2.size} bytes</td>
-                        </tr>
-                        <tr>
-                          <td>Content Type</td>
-                          <td>{metadata.r2.metadata.contentType}</td>
-                        </tr>
-                        <tr>
-                          <td>ETag</td>
-                          <td>{metadata.r2.metadata.etag}</td>
-                        </tr>
-                        <tr>
-                          <td>Uploaded</td>
-                          <td>{metadata.r2.metadata.uploaded}</td>
-                        </tr>
-                        {metadata.r2.metadata.version && (
+                    {metadata.r2Error ? (
+                      <div className="error-message">
+                        <p>Error: {metadata.r2Error}</p>
+                        <p className="suggestion">R2 metadata could not be retrieved. This may be due to permissions or authentication issues.</p>
+                      </div>
+                    ) : !metadata.r2 ? (
+                      <div className="info-note">
+                        <p>File not found in Cloudflare R2.</p>
+                        <p className="suggestion">This file does not exist in R2 storage. Try uploading it first.</p>
+                      </div>
+                    ) : (
+                      <table className="metadata-table">
+                        <tbody>
                           <tr>
-                            <td>Version</td>
-                            <td>{metadata.r2.metadata.version}</td>
+                            <td>Key</td>
+                            <td>{metadata.r2.key}</td>
                           </tr>
-                        )}
-                      </tbody>
-                    </table>
+                          <tr>
+                            <td>Size</td>
+                            <td>{metadata.r2.size} bytes</td>
+                          </tr>
+                          <tr>
+                            <td>Content Type</td>
+                            <td>{metadata.r2.metadata.contentType}</td>
+                          </tr>
+                          <tr>
+                            <td>ETag</td>
+                            <td>{metadata.r2.metadata.etag}</td>
+                          </tr>
+                          <tr>
+                            <td>Uploaded</td>
+                            <td>{metadata.r2.metadata.uploaded}</td>
+                          </tr>
+                          {metadata.r2.metadata.version && (
+                            <tr>
+                              <td>Version</td>
+                              <td>{metadata.r2.metadata.version}</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
                 )}
                 
@@ -776,9 +783,15 @@ function App() {
                   <div className="gcs-metadata">
                     <h4>GCS Metadata</h4>
                     {metadata.gcsError ? (
-                      <p className="error-message">Error: {metadata.gcsError}</p>
+                      <div className="error-message">
+                        <p>Error: {metadata.gcsError}</p>
+                        <p className="suggestion">GCS metadata could not be retrieved. This may be due to permissions or authentication issues.</p>
+                      </div>
                     ) : !metadata.gcs ? (
-                      <p className="info-note">No GCS metadata available.</p>
+                      <div className="info-note">
+                        <p>File not found in Google Cloud Storage.</p>
+                        <p className="suggestion">This file does not exist in GCS. Try uploading it first.</p>
+                      </div>
                     ) : (
                     <table className="metadata-table">
                       <tbody>
@@ -833,7 +846,10 @@ function App() {
                         <p className="suggestion">S3 metadata could not be retrieved. This may be due to permissions or authentication issues.</p>
                       </div>
                     ) : !metadata.s3 ? (
-                      <p className="info-note">No S3 metadata available. The file may not exist in S3 or may have a different name.</p>
+                      <div className="info-note">
+                        <p>File not found in Amazon S3.</p>
+                        <p className="suggestion">This file does not exist in S3 storage. Try uploading it first.</p>
+                      </div>
                     ) : (
                     <table className="metadata-table">
                       <tbody>
